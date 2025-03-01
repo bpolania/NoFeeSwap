@@ -1,8 +1,8 @@
 # NoFeeSwap Security Report
 
-### Nofeeswap.sol 
+## Nofeeswap.sol 
 
-#### Reentrancy Vulnerability in unlock Function - HIGH SEVERITY
+### Reentrancy Vulnerability in unlock Function - HIGH SEVERITY
 
 The unlock function makes an external call to an untrusted address (unlockTarget) before checking the readNonzeroAmounts() condition. This creates a potential reentrancy vector, as the external call could manipulate state before the check is performed.
 
@@ -33,7 +33,7 @@ There is a potential reentrancy vulnerability here because:
 2. If the `unlockTarget` is malicious, it could call back into the contract before the check is performed
 3. There's no reentrancy guard to prevent this
 
-#### Lack of Transfer Return Value Validation in take() Methods - HIGH SEVERITY
+### Lack of Transfer Return Value Validation in take() Methods - HIGH SEVERITY
 
 The take() functions in the Nofeeswap contract fail to validate the return values of token transfers. These functions call transfer() directly on arbitrary token addresses without checking whether the transfers succeeded.
 
@@ -57,7 +57,7 @@ This vulnerability can lead to serious accounting discrepancies:
 * If a transfer silently fails, users could effectively receive "phantom" tokens in the protocol while actual tokens remain locked
 * This could potentially be exploited to manipulate protocol reserves or create artificial liquidity
 
-#### Vulnerable Reserve Updates in sync() Functions - HIGH SEVERITY
+### Vulnerable Reserve Updates in sync() Functions - HIGH SEVERITY
 
 The sync() functions in the Nofeeswap contract update token reserves based on the current balance of tokens in the contract without validating how those balances were changed.
 
@@ -90,9 +90,9 @@ This vulnerability enables several attack vectors:
 * Economic attacks: In a liquidity pool context, artificially modified reserves could lead to incorrect price calculations, enabling profitable arbitrage at the expense of legitimate users.
 * Special token issues: Rebasing tokens, fee-on-transfer tokens, or tokens with built-in inflation mechanisms could cause continuous accounting discrepancies when sync() is called.
 
-### StorageAccess.sol 
+## StorageAccess.sol 
 
-#### Storage Slot Exposure - CRITICAL SEVERITY
+### Storage Slot Exposure - CRITICAL SEVERITY
 
 The `Nofeeswap` contract inherits from `StorageAccess`, which exposes three public view functions that allow unrestricted reading of arbitrary storage slots. These functions have no access controls, meaning any external actor can directly read any storage slot in the contract, including sensitive data.
 
@@ -124,7 +124,7 @@ contract StorageAccess is IStorageAccess {
 }
 ```
 
-#### Lack of Access Control on Storage Reading Functions - CRITICAL SEVERITY
+### Lack of Access Control on Storage Reading Functions - CRITICAL SEVERITY
 
 The StorageAccess contract, inherited by Nofeeswap, provides functionality to read arbitrary storage slots without any access control mechanisms. While the contract implements access controls for state-modifying functions through the isProtocolUnlocked() check, the storage reading functions have no restrictions, allowing any external actor to access sensitive protocol data.
 
@@ -167,7 +167,7 @@ function modifyBalance(address owner, Tag tag, int256 amount) external override 
 }
 ```
 
-#### Unbounded Array Iteration - Low Severity
+### Unbounded Array Iteration - Low Severity
 
 The StorageAccess contract, which is inherited by Nofeeswap, contains functions that allow reading multiple storage slots without imposing any upper bound on the number of slots that can be read in a single call.
 
@@ -191,7 +191,7 @@ function storageAccess(
 ```
 These functions will attempt to read as many slots as requested, even if the request exceeds practical gas limits.
 
-#### Insecure Inheritance Exposes Protected Contract Data - HIGH SEVERITY
+### Insecure Inheritance Exposes Protected Contract Data - HIGH SEVERITY
 
 The Nofeeswap contract inherits from StorageAccess, which provides unrestricted methods to read any storage slot. This inheritance pattern allows all storage variables in Nofeeswap to be exposed, including those intended to be private or protected, effectively breaking the access control mechanisms of the entire inheritance tree.
 
@@ -224,7 +224,7 @@ constructor(address _delegatee, address admin) {
 
 The admin address is stored in a storage slot that should be protected, but can be directly accessed through the inherited storageAccess methods.
 
-#### Potential Slot Manipulation in Future Upgrades - HIGH SEVERITY
+### Potential Slot Manipulation in Future Upgrades - HIGH SEVERITY
 
 The Nofeeswap contract inherits from StorageAccess, which allows reading arbitrary storage slots. This becomes a critical concern in the context of the project's governance system, which is explicitly designed to enable upgrades through the GovernorBravoDelegate contract.
 
@@ -264,9 +264,9 @@ function storageAccess(bytes32 slot) external view override returns (bytes32) {
 
 When combined, these features create a scenario where upgrades executed through governance could inadvertently expose sensitive information through the unrestricted storage access functions.
 
-### TransientAccess.sol
+## TransientAccess.sol
 
-#### Infinite Loop Risk in TransientAccess Contract - Medium Severity
+### Infinite Loop Risk in TransientAccess Contract - Medium Severity
 
 The TransientAccess contract implements a non-standard infinite loop pattern in the assembly code that relies on a specific break condition to terminate. This pattern appears in all three transientAccess functions and is structured as follows:
 
@@ -295,7 +295,7 @@ The root cause is the combination of:
 
 In a DeFi context, where malicious actors have financial incentives to disrupt protocol operations, this pattern introduces unnecessary risk.
 
-#### Arithmetic Operations Without Overflow Checks - Low Severity
+### Arithmetic Operations Without Overflow Checks - Low Severity
 
 The TransientAccess contract performs arithmetic operations in assembly blocks without explicit overflow checks. While Solidity 0.8.28 has built-in overflow protection for regular code, assembly code bypasses these safeguards. The vulnerability specifically appears in memory pointer arithmetic when handling array construction and when incrementing slot pointers:
 
@@ -331,7 +331,7 @@ let end := add(freeMemoryPointer, shl(5, slots.length))
 * Lack of explicit bounds checking on input parameters like nSlots before performing arithmetic calculations
 * The protocol design assumes trusted inputs or reasonable limits without enforcing them at the assembly level  
 
-#### Lack of Input Validation - Medium Severity
+### Lack of Input Validation - Medium Severity
 
 Both the TransientAccess and StorageAccess contracts lack proper input validation for parameters that control the number of storage slots to read. Specifically, the nSlots parameter in the second function and the slots.length in the third function of both contracts are used without any bounds checking. This allows callers to specify arbitrarily large arrays, potentially leading to excessive gas consumption or out-of-gas errors.
 The vulnerability is particularly here because these functions may be called through user-initiated transactions, potentially allowing malicious users to manipulate protocol operations.
@@ -378,7 +378,7 @@ The root cause of this vulnerability is twofold:
 
 Additionally, while the Nofeeswap contract implements various validations, it doesn't validate inputs before calling the storage access functions.
 
-#### Memory Safety Issues - Medium Severity
+### Memory Safety Issues - Medium Severity
 
 The TransientAccess contract contain multiple memory safety issues in their assembly blocks. While they use the "memory-safe" annotation, the contracts manually manipulate memory pointers without following all best practices for EVM memory management.
 
@@ -414,7 +414,7 @@ The root cause is a combination of:
 * Optimization Focus: Prioritizing gas optimization over memory safety practices
 * Lack of Defensive Programming: Assuming memory operations will always succeed within expected bounds
 
-#### Lack of Access Control - HIGH SEVERITY
+### Lack of Access Control - HIGH SEVERITY
 
 The TransientAccess contract lack access control mechanisms for their storage reading functions. Any external address can call these functions to read arbitrary storage slots or transient storage from the protocol. This unrestricted access to storage data poses a significant privacy and security risk.
 
@@ -438,7 +438,7 @@ function storageAccess(bytes32 slot) external view override returns (bytes32) {
 
 The root cause appears to be inheritance Without Restriction: Inheriting base contracts without adding access control layers.
 
-#### Gas-Inefficient Array Construction - Low Severity
+### Gas-Inefficient Array Construction - Low Severity
 
 The TransientAccess contract use inefficient patterns for constructing and returning arrays, particularly in the functions that return multiple storage slots. These inefficiencies can lead to excessive gas consumption, especially when reading large numbers of slots, which could be problematic for a gas-sensitive DeFi protocol focused on fee-free swaps.
 The main inefficiencies are:
