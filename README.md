@@ -263,3 +263,219 @@ function storageAccess(bytes32 slot) external view override returns (bytes32) {
 ```
 
 When combined, these features create a scenario where upgrades executed through governance could inadvertently expose sensitive information through the unrestricted storage access functions.
+
+### TransientAccess.sol
+
+#### Infinite Loop Risk in TransientAccess Contract - Medium Severity
+
+The TransientAccess contract implements a non-standard infinite loop pattern in the assembly code that relies on a specific break condition to terminate. This pattern appears in all three transientAccess functions and is structured as follows:
+
+```
+for {} 1 {} {
+  mstore(freeMemoryPointer, tload(startSlot))
+  freeMemoryPointer := add(freeMemoryPointer, 0x20)
+  startSlot := add(startSlot, 1)
+  if iszero(lt(freeMemoryPointer, end)) { break }
+}
+```
+This creates an unconditional loop that only terminates when the freeMemoryPointer is no longer less than the end value. If this condition is never met due to input manipulation or unexpected conditions, the function will consume all available gas and revert.
+
+This vulnerability could:
+
+* Allow attackers to cause Denial of Service (DoS) for specific protocol operations that rely on transient storage access
+* Create unpredictable gas consumption, leading to failed transactions during crucial market movements
+* Enable front-running attacks where malicious actors manipulate transient storage to cause excessive gas consumption for legitimate users
+* Disrupt protocol operations during high congestion periods
+
+The root cause is the combination of:
+
+* Using a non-standard infinite loop pattern that relies solely on a break condition
+* Lack of input validation for parameters that influence the loop's execution (particularly nSlots and slots.length)
+* No safeguards against excessive gas consumption
+
+In a DeFi context, where malicious actors have financial incentives to disrupt protocol operations, this pattern introduces unnecessary risk.
+
+#### Arithmetic Operations Without Overflow Checks - Low Severity
+
+The TransientAccess contract performs arithmetic operations in assembly blocks without explicit overflow checks. While Solidity 0.8.28 has built-in overflow protection for regular code, assembly code bypasses these safeguards. The vulnerability specifically appears in memory pointer arithmetic when handling array construction and when incrementing slot pointers:
+
+```
+freeMemoryPointer := add(freeMemoryPointer, 0x20)
+startSlot := add(startSlot, 1)
+let end := add(freeMemoryPointer, shl(5, nSlots))
+```
+
+These operations could potentially overflow if extremely large inputs are provided, especially for the nSlots parameter which is used to calculate memory boundaries.
+
+In a DeFi protocol, this vulnerability could potentially lead to:
+
+* Memory corruption if pointers wrap around due to overflow
+* Incorrect transient storage access, potentially affecting swap calculations
+* Unexpected gas consumption or out-of-gas errors during execution
+* In extreme cases, potential misreads of transient storage values that could affect financial calculations
+
+While the main Nofeeswap contract implements multiple safety checks for financial operations, the lack of validation for array sizes and slot counts before calling TransientAccess functions leaves a small attack surface.
+
+The root cause is threefold:
+
+```
+// From TransientAccess, second function
+let length := shl(5, nSlots)
+let end := add(freeMemoryPointer, length)
+
+// From TransientAccess, third function
+let end := add(freeMemoryPointer, shl(5, slots.length))
+```
+
+* Direct use of low-level assembly arithmetic operations that bypass Solidity's built-in overflow protection
+* Lack of explicit bounds checking on input parameters like nSlots before performing arithmetic calculations
+* The protocol design assumes trusted inputs or reasonable limits without enforcing them at the assembly level  
+
+#### Lack of Input Validation - Medium Severity
+
+Both the TransientAccess and StorageAccess contracts lack proper input validation for parameters that control the number of storage slots to read. Specifically, the nSlots parameter in the second function and the slots.length in the third function of both contracts are used without any bounds checking. This allows callers to specify arbitrarily large arrays, potentially leading to excessive gas consumption or out-of-gas errors.
+The vulnerability is particularly here because these functions may be called through user-initiated transactions, potentially allowing malicious users to manipulate protocol operations.
+
+```
+function transientAccess(
+  bytes32 startSlot,
+  uint256 nSlots
+) external view override returns (bytes32[] memory) {
+  // No validation on nSlots before using it in calculations
+  assembly ("memory-safe") {
+    // ...
+    let length := shl(5, nSlots)
+    // ...
+  }
+}
+
+function transientAccess(
+  bytes32[] calldata slots
+) external view override returns (bytes32[] memory) {
+  // No validation on slots.length before using it in calculations
+  assembly ("memory-safe") {
+    // ...
+    let end := add(freeMemoryPointer, shl(5, slots.length))
+    // ...
+  }
+}
+```
+
+This vulnerability could lead to:
+
+* Denial of Service (DoS) attacks by deliberately consuming excessive gas
+* Transaction failures at critical moments during swap operations
+* Economic attacks where an attacker forces other users' transactions to fail during price movements
+* Excessive gas consumption leading to higher costs for protocol users or operators
+* Potential blockchain congestion if many large-array operations are executed
+
+The main Nofeeswap contract relies on these storage access functions for critical operations, making the impact of this vulnerability significant for the overall protocol security.
+
+The root cause of this vulnerability is twofold:
+
+* Missing Input Validation: The contracts fail to implement any bounds checking on array sizes before processing
+* Trust Assumptions: The contracts appear to be designed with the assumption that callers will provide reasonable inputs
+
+Additionally, while the Nofeeswap contract implements various validations, it doesn't validate inputs before calling the storage access functions.
+
+#### Memory Safety Issues - Medium Severity
+
+The TransientAccess contract contain multiple memory safety issues in their assembly blocks. While they use the "memory-safe" annotation, the contracts manually manipulate memory pointers without following all best practices for EVM memory management.
+
+The primary concerns are:
+
+* Free Memory Pointer Not Updated: The contracts read the free memory pointer from 0x40 but never write back to it after allocating memory. This can cause conflicts with other memory operations in the same transaction.
+* No Memory Bounds Validation: The contracts don't verify that the calculated memory regions are valid or within reasonable bounds before performing operations.
+* Unbounded Memory Allocation: With no input validation, the contracts could attempt to allocate excessive amounts of memory based on user input.
+* Pointer Arithmetic Without Checks: Memory pointer arithmetic is performed without checks for overflow or underflow conditions.
+
+In a DeFi protocol, memory safety issues can lead to:
+
+* Transaction failures at critical moments during swaps
+* Potential data corruption affecting financial calculations
+* Unpredictable behavior when the protocol is under high load
+* Conflicts with other memory operations in complex transaction flows
+
+
+```
+assembly ("memory-safe") {
+  let freeMemoryPointer := mload(0x40)
+  let start := freeMemoryPointer
+  // Memory allocation but free pointer never updated
+  // ...
+  return(start, sub(end, start))
+}
+```
+
+The root cause is a combination of:
+
+* Low-Level Memory Management: Direct assembly usage bypasses Solidity's memory safety
+* Incomplete Memory Practices: Not updating the free memory pointer after allocation
+* Optimization Focus: Prioritizing gas optimization over memory safety practices
+* Lack of Defensive Programming: Assuming memory operations will always succeed within expected bounds
+
+#### Lack of Access Control - HIGH SEVERITY
+
+The TransientAccess contract lack access control mechanisms for their storage reading functions. Any external address can call these functions to read arbitrary storage slots or transient storage from the protocol. This unrestricted access to storage data poses a significant privacy and security risk.
+
+While the main Nofeeswap contract implements some access controls for protocol operations, it inherits these unrestricted storage access functions without adding additional access limitations. This allows potential attackers to inspect internal protocol state and user data without authorization.
+
+This vulnerability can lead to:
+
+* Privacy Leakage: Sensitive user data and positions could be exposed
+* Competitive Disadvantage: Business logic and parameters meant to be private could be revealed to competitors
+* Information Asymmetry: Sophisticated users with knowledge of storage layouts could gain unfair advantages over regular users
+
+```
+// No access modifiers or checks
+function storageAccess(bytes32 slot) external view override returns (bytes32) {
+  assembly ("memory-safe") {
+    mstore(0, sload(slot))
+    return(0, 0x20)
+  }
+}
+```
+
+The root cause appears to be inheritance Without Restriction: Inheriting base contracts without adding access control layers.
+
+#### Gas-Inefficient Array Construction - Low Severity
+
+The TransientAccess contract use inefficient patterns for constructing and returning arrays, particularly in the functions that return multiple storage slots. These inefficiencies can lead to excessive gas consumption, especially when reading large numbers of slots, which could be problematic for a gas-sensitive DeFi protocol focused on fee-free swaps.
+The main inefficiencies are:
+
+* Redundant Memory Operations: The contracts allocate memory and copy data in ways that involve more operations than necessary.
+* Non-Optimized Looping: The custom loop structure adds overhead compared to more gas-efficient alternatives.
+* ABI Encoding Overhead: The contracts manually implement ABI encoding for dynamic arrays, which is generally less gas-efficient than using Solidity's built-in mechanisms.
+* Excessive Pointer Manipulations: Each iteration of the loop involves multiple pointer adjustments.
+* Manual Return Data Preparation: Using return(start, size) from assembly requires additional manual memory management.
+
+```
+function transientAccess(bytes32[] calldata slots) external view override returns (bytes32[] memory) {
+  assembly ("memory-safe") {
+    let freeMemoryPointer := mload(0x40)
+    let start := freeMemoryPointer
+    mstore(freeMemoryPointer, 0x20)
+    mstore(add(freeMemoryPointer, 0x20), slots.length)
+    freeMemoryPointer := add(freeMemoryPointer, 0x40)
+    let end := add(freeMemoryPointer, shl(5, slots.length))
+    let calldataPointer := slots.offset
+    
+    // Inefficient loop structure
+    for {} 1 {} {
+      mstore(freeMemoryPointer, tload(calldataload(calldataPointer)))
+      freeMemoryPointer := add(freeMemoryPointer, 0x20)
+      calldataPointer := add(calldataPointer, 0x20)
+      if iszero(lt(freeMemoryPointer, end)) { break }
+    }
+    
+    return(start, sub(end, start))
+  }
+}
+```
+
+The inefficiencies stem from:
+
+* Low-Level Manual Optimization: Attempting to optimize at the assembly level but not fully optimizing the algorithm
+* Complex Memory Management: Managing memory manually instead of leveraging compiler optimizations
+* Prioritizing Code Clarity: Some inefficiencies may be accepted trade-offs for readability or maintainability
+* One-Size-Fits-All Approach: Using the same pattern for all array sizes rather than optimizing for common cases
